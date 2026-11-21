@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Tests
+        run: python -m pytest -q
+      - name: Bundled knowledge base is healthy (exits non-zero on missing or conflicting documents)
+        run: python -m mitra kb
+  image:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t mitra:ci .
+      - name: Smoke test the production image
+        run: |
+          docker run -d --name mitra -e MITRA_API_KEYS=ci-key -p 8000:8000 mitra:ci
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8000/ready && break || sleep 1; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/schemes)" = "401"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-API-Key: ci-key' http://127.0.0.1:8000/schemes)" = "200"
+          docker stop mitra

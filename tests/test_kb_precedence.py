@@ -15,10 +15,11 @@ def test_expected_documents_are_loaded(kb):
         assert kb.get(source_id) is not None, source_id
 
 
-def test_friday_copies_win_and_do_not_conflict_with_the_shared_kb(kb):
+def test_repo_copies_and_bundled_kb_agree(kb):
+    """The three guidelines exist both at the repo root and in kb/; they must be identical."""
     assert kb.conflicts == []
     for source_id in ("GL-FRM-01", "GL-FRM-02", "GL-PEN-01"):
-        assert kb.get(source_id).path.parent == config.REPO_ROOT
+        assert kb.get(source_id).path.parent in {config.REPO_ROOT, config.BUNDLED_KB}
 
 
 def test_non_kb_markdown_is_ignored(kb):

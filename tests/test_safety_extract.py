@@ -1,8 +1,8 @@
 import json
+from pathlib import Path
 
 import pytest
 
-from mitra import config
 from mitra.extract import extract_profile
 from mitra.i18n import detect_language
 from mitra.safety import detect_fraud, sanitize
@@ -44,9 +44,7 @@ def test_ordinary_questions_are_not_flagged(text):
 
 
 def _grievances():
-    path = config.WORKSPACE / "mitrapur_pradesh_seed_and_grievances_2026" / "kb" / "grievances" / "resolved_grievances.json"
-    if not path.exists():
-        pytest.skip("grievance fixtures not found")
+    path = Path(__file__).parent / "fixtures" / "grievances" / "resolved_grievances.json"
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 

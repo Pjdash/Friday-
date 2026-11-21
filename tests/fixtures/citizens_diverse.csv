@@ -1,0 +1,15 @@
+citizen_id,full_name,phone,date_of_birth,gender,district,residence_type,annual_household_income,occupation,category,is_disabled,disability_percent,land_holding_acres,preferred_language,consent_given
+C1019,Rameshwar Prasad Verma,9000001019,1982-03-14,male,Nayagaon,rural,115000,farmer,obc,N,0,2.2,hi,Y
+C1020,Kavya Gowda,9000001020,2006-05-19,female,Dakshinpur,rural,165000,student,sc,N,0,0.0,kn,Y
+C1021,Subramanian Natarajan,9000001021,1958-07-08,male,Thendralnagar,urban,138000,retired,general,N,0,0.0,ta,Y
+C1022,Neha Kumari Gond,9000001022,1989-02-25,female,Nayagaon,rural,148000,shopkeeper,st,Y,65,0.0,en,Y
+C1023,Devendra Singh Patel,9000001023,1975-11-03,male,Nayagaon,rural,280000,farmer,general,N,0,6.4,hi,Y
+C1024,Meenakshi Sundaram,9000001024,1996-08-21,female,Thendralnagar,rural,88000,daily_wage,obc,N,0,0.0,ta,Y
+C1025,Basavaraj Hegde,9000001025,1969-04-12,male,Dakshinpur,rural,125000,farmer,st,N,0,3.8,kn,Y
+C1026,Aarav Deshmukh,9000001026,2003-01-30,male,Dakshinpur,urban,340000,student,general,N,0,0.0,en,Y
+C1027,Sunita Devi Chauhan,9000001027,1951-09-16,female,Nayagaon,rural,62000,retired,sc,Y,82,0.0,hi,Y
+C1028,Kiran Rao,9000001028,1992-06-11,other,Dakshinpur,urban,215000,shopkeeper,obc,N,0,0.0,en,Y
+C1029,Selvi Murugan,9000001029,2007-10-04,female,Thendralnagar,rural,95000,student,sc,N,0,0.0,ta,Y
+C1030,Mahesh Kumar Yadav,9000001030,1986-12-27,male,Nayagaon,urban,410000,shopkeeper,obc,N,0,0.0,hi,Y
+C1031,Lakshmi Narayana Bhat,9000001031,1949-03-22,male,Dakshinpur,rural,235000,retired,general,Y,85,0.0,kn,Y
+C1032,Ananya Krishnan,9000001032,1999-07-15,female,Thendralnagar,urban,54000,daily_wage,st,N,0,0.0,en,Y

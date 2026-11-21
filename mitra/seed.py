@@ -14,7 +14,10 @@ class CitizenStore:
 
     @classmethod
     def load(cls, directory: Path | None = None) -> "CitizenStore":
-        path = (directory or config.seed_dir()) / "citizens_diverse.csv"
+        directory = directory or config.seed_dir()
+        if directory is None:  # production default: no demo citizens
+            return cls({})
+        path = directory / "citizens_diverse.csv"
         if not path.exists():
             return cls({})
         with path.open(encoding="utf-8-sig", newline="") as handle:

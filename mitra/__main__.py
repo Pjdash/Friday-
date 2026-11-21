@@ -34,10 +34,14 @@ def main(argv: list[str] | None = None) -> int:
     assistant = Assistant()
     if args.command == "kb":
         from collections import Counter
+        from .schemes import required_source_ids
         print(f"{len(assistant.kb)} documents:", dict(Counter(d.doc_type for d in assistant.kb)))
         for source_id, paths in assistant.kb.conflicts:
             print(f"CONFLICT {source_id}: {paths[0]} vs {paths[1]}")
-        return 0
+        problems = assistant.kb.problems(required_source_ids())
+        for problem in problems:
+            print(f"PROBLEM: {problem}")
+        return 1 if problems else 0
 
     answer = assistant.ask(args.message, citizen_id=args.citizen, as_of=args.as_of, language=args.language)
     print(answer.text)

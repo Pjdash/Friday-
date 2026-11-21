@@ -8,7 +8,7 @@ from datetime import date
 
 import pytest
 
-from mitra import embeddings, env, generator
+from mitra import embeddings, generator
 from mitra.agent import Assistant, _NOT_FOUND_TEXT
 from mitra.embeddings import VectorIndex
 from mitra.generator import Generator, Passage, check, redact
@@ -301,7 +301,6 @@ def test_no_passages_means_no_model_call():
 
 
 def test_switches_and_missing_keys_disable_the_networked_parts(monkeypatch):
-    monkeypatch.setattr(env, "load", lambda: None)  # ignore any developer .env
     for name in ("GROQ_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MITRA_EMBEDDINGS", "auto")
@@ -363,6 +362,20 @@ def test_fraud_eligibility_documents_fee_and_appeals_never_reach_the_model(kb, c
     chat = FakeChat(cites_first_passage)
     assistant_with(kb, citizens, chat).ask(question, as_of=TODAY)
     assert chat.calls == []
+
+
+def test_eligibility_and_documents_questions_about_unsupported_schemes_stay_verbatim(kb, citizens):
+    """These share the information path (official text plus a notice) but must never be reworded by a model."""
+    chat = FakeChat(cites_first_passage)
+    assistant = assistant_with(kb, citizens, chat)
+    for question in ("Am I eligible for the Balika Vidya Scholarship? I am a 17 year old girl.",
+                     "What documents are needed for the Balika Vidya Scholarship?"):
+        answer = assistant.ask(question, as_of=TODAY)
+        assert "cannot run an automated eligibility" in answer.text and "llm_generated" not in answer.flags
+    assert chat.calls == []
+    # A plain information question about the same scheme is allowed to be worded by the model.
+    info = assistant.ask("What is the last date for the Balika Vidya Scholarship?", as_of=TODAY)
+    assert "llm_generated" in info.flags and len(chat.calls) == 1
 
 
 def test_injected_instructions_are_stripped_before_the_model_sees_the_question(kb, citizens):

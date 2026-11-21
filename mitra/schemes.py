@@ -176,6 +176,31 @@ VRIDDHJAN_PENSION = Scheme(
 
 SCHEMES: dict[str, Scheme] = {s.scheme_id: s for s in (KISAN_SAMRIDDHI, KRISHI_SINCHAI, VRIDDHJAN_PENSION)}
 
+# Policies and notices every answer relies on, whichever scheme is asked about.
+CORE_POLICY_IDS = ("POL-FEE-01", "POL-GRV-01", "POL-PRV-01", "CIR-2026-09")
+
+
+def _condition_leaves(node: Node):
+    if isinstance(node, Condition):
+        yield node
+    else:
+        for child in node.children:
+            yield from _condition_leaves(child)
+
+
+def required_source_ids() -> list[str]:
+    """Every knowledge-base document the rules above cite. A deployment missing one must not start."""
+    ids = set(CORE_POLICY_IDS)
+    for scheme in SCHEMES.values():
+        ids.add(scheme.guideline_id)
+        for cond in _condition_leaves(scheme.rules):
+            ids.add(cond.source_id)
+            ids.update(o.source_id for o in cond.overrides)
+            ids.update(n.source_id for n in cond.notes)
+        for notes in scheme.doc_notes.values():
+            ids.update(n.source_id for n in notes)
+    return sorted(ids)
+
 # Words people use for each scheme, beyond the official names parsed from the guideline headers.
 EXTRA_ALIASES: dict[str, tuple[str, ...]] = {
     "SCH-FRM-01": ("kisan samriddhi", "किसान समृद्धि", "ಕಿಸಾನ್ ಸಮೃದ್ಧಿ", "கிசான் சம்ரித்தி"),

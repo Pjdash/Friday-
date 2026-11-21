@@ -160,6 +160,33 @@ def test_hinglish_rejection_notes_the_income_is_within_the_current_cap(assistant
     assert "₹1,45,000" in answer.text and "₹1,50,000" in answer.text and "age" in answer.text.casefold()
 
 
+def test_unsupported_scheme_gets_official_text_not_verdicts_for_other_schemes(assistant):
+    answer = assistant.ask("Am I eligible for the Balika Vidya Scholarship? I am a 17 year old girl.", as_of=TODAY)
+    assert answer.intent == "eligibility" and answer.scheme_id == "SCH-EDU-01" and answer.verdicts == []
+    assert "unsupported_scheme" in answer.flags and "cannot run an automated eligibility" in answer.text
+    assert "Vriddhjan" not in answer.text and "Kisan" not in answer.text
+
+
+def test_unsupported_scheme_deadline_comes_from_the_extension_circular(assistant):
+    answer = assistant.ask("What is the last date for the Balika Vidya Scholarship?", as_of=TODAY)
+    # The extended date comes from an in-force official notice that cites CIR-2026-02, or the circular itself.
+    assert {"CIR-2026-02", "MIX-NOT-01"} & set(answer.citations) and "2026-11-21" in answer.text
+    assert "GL-EDU-01" not in answer.citations or "CIR-2026-02" in answer.citations  # never the stale date alone
+
+
+def test_closed_scheme_is_reported_closed(assistant):
+    answer = assistant.ask("Can I enrol in Shramik Suraksha Bima?", as_of=TODAY)
+    assert "CIR-2026-04" in answer.citations and "GL-INS-01" not in answer.citations
+    assert "permanently" in answer.text
+
+
+def test_mixed_question_answers_supported_scheme_and_flags_the_other(assistant):
+    answer = assistant.ask("I am 70 years old with income of ₹1,00,000. Am I eligible for the Vriddhjan Pension "
+                           "and the Balika Vidya Scholarship?", as_of=TODAY)
+    assert [v["scheme_id"] for v in answer.verdicts] == ["SCH-PEN-01"]
+    assert "cannot run an automated eligibility" in answer.text
+
+
 def test_off_topic_question_gets_an_honest_fallback(assistant):
     answer = assistant.ask("What is the airspeed velocity of an unladen swallow?", as_of=TODAY)
     assert answer.intent == "info" and answer.citations == [] and "could not find" in answer.text

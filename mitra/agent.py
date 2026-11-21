@@ -78,6 +78,7 @@ class State(TypedDict, total=False):
     fraud: FraudSignal | None
     intent: str
     schemes: list[str]
+    unsupported: list[str]
     answer: Answer
 
 
@@ -94,7 +95,8 @@ class Assistant:
                  retriever: Retriever | None = None, generator: Generator | None = None):
         """`retriever` and `generator` default to the environment-configured ones (embeddings and LLM
         answers are used when keys and packages are available, otherwise keyword search and quoting)."""
-        self.kb = kb or KnowledgeBase.load()
+        # `is not None`, not truthiness: an empty KB must be reported as unhealthy, never silently replaced.
+        self.kb = kb if kb is not None else KnowledgeBase.load()
         self.citizens = citizens if citizens is not None else CitizenStore.load()
         self.retriever = retriever or Retriever(
             self.kb, embedder=embeddings.default_embedder(), cache_path=embeddings.cache_dir())
@@ -115,12 +117,28 @@ class Assistant:
     # ---- graph ---------------------------------------------------------------------------------
 
     def _build_aliases(self) -> dict[str, set[str]]:
+        """Names people use for each scheme: the ones we can evaluate, then every other scheme in the KB.
+
+        Knowing the other schemes matters: a question about one of them must not be answered with
+        verdicts for the three we can evaluate.
+        """
         aliases: dict[str, set[str]] = {}
+        self._names: dict[str, str] = {}
         for scheme_id, scheme in SCHEMES.items():
             guideline = self.kb.get(scheme.guideline_id)
             names = official_names(guideline) if guideline else []
             raw = {scheme_id, scheme.name, *names, *EXTRA_ALIASES.get(scheme_id, ())}
             aliases[scheme_id] = {a.casefold() for a in raw}
+            self._names[scheme_id] = scheme.name
+        for doc in self.kb:
+            if doc.doc_type != "guideline" or not doc.source_id.startswith("GL-") or len(doc.scheme_ids) != 1:
+                continue
+            scheme_id = doc.scheme_ids[0]
+            if scheme_id in aliases:
+                continue
+            names = official_names(doc)
+            aliases[scheme_id] = {a.casefold() for a in {scheme_id, *names}}
+            self._names[scheme_id] = names[0] if names else scheme_id
         return aliases
 
     def _build_graph(self):
@@ -171,13 +189,14 @@ class Assistant:
 
     def _classify(self, state: State) -> State:
         text = state["clean"].casefold()
-        schemes = [sid for sid, names in self._aliases.items() if any(n in text for n in names)]
+        matched = [sid for sid, names in self._aliases.items() if any(n in text for n in names)]
         intent = "info"
         for candidate, words in _KEYWORDS.items():
             if any(w in text for w in words):
                 intent = candidate
                 break
-        return {"intent": intent, "schemes": schemes}
+        return {"intent": intent, "schemes": [s for s in matched if s in SCHEMES],
+                "unsupported": [s for s in matched if s not in SCHEMES]}
 
     # ---- nodes: answers --------------------------------------------------------------------------
 
@@ -215,6 +234,9 @@ class Assistant:
     def _answer_eligibility(self, state: State) -> State:
         as_of, profile, lang = state["as_of"], state["profile"], state["lang"]
         mentioned = state.get("schemes") or []
+        unsupported = state.get("unsupported") or []
+        if unsupported and not mentioned:
+            return self._info(state, intent="eligibility", preface=self._unsupported_notice(unsupported))
         if not profile:
             return self._finish(state, self._ask_for_details(mentioned), "eligibility",
                                 needs=list(_FIELD_PROMPT))
@@ -224,6 +246,8 @@ class Assistant:
         if "no_consent" in state.get("flags", []):
             blocks.insert(0, "Your saved record was not used because consent is not on file (POL-PRV-01). "
                              "This check uses only what you wrote in your message.")
+        if unsupported:
+            blocks.append(self._unsupported_notice(unsupported))
         blocks += [FINAL_DECISION[lang], ZERO_FEE[lang]]
         citations = [s for v in verdicts for s in v.sources] + ["POL-FEE-01"]
         needs = _unique([f for v in verdicts if v.outcome == "needs_info" for f in v.missing_fields])
@@ -234,6 +258,9 @@ class Assistant:
     def _answer_documents(self, state: State) -> State:
         as_of, profile, lang = state["as_of"], state["profile"], state["lang"]
         mentioned = state.get("schemes") or []
+        unsupported = state.get("unsupported") or []
+        if unsupported and not mentioned:
+            return self._info(state, intent="documents", preface=self._unsupported_notice(unsupported))
         if not mentioned:
             names = "; ".join(f"{s.name} ({sid})" for sid, s in SCHEMES.items())
             return self._finish(state, f"Which scheme do you mean? I can list documents for: {names}.", "documents")
@@ -245,6 +272,8 @@ class Assistant:
             citations += verdict.sources
         blocks.append("Officers may only require the mandatory documents; optional ones cannot be demanded "
                       "as a condition of accepting your application (POL-PRV-01).")
+        if unsupported:
+            blocks.append(self._unsupported_notice(unsupported))
         blocks.append(FINAL_DECISION[lang])
         return self._finish(state, "\n\n".join(blocks), "documents", citations=citations, verdicts=verdicts)
 
@@ -298,21 +327,33 @@ class Assistant:
                             scheme_id=scheme.scheme_id if scheme else None)
 
     def _answer_info(self, state: State) -> State:
+        return self._info(state)
+
+    def _info(self, state: State, intent: str = "info", preface: str = "") -> State:
+        """Answer from retrieved official text. `preface` is shown first (e.g. the unsupported-scheme notice)."""
         as_of, lang = state["as_of"], state["lang"]
-        mentioned = state.get("schemes") or []
-        hits = self.retriever.search(self._topic_query(state["clean"], mentioned), as_of,
-                                     scheme_id=mentioned[0] if mentioned else None, language=lang, k=3)
+        topic = (state.get("schemes") or state.get("unsupported") or [None])[0]
+        flags = list(state.get("flags", []))
+        if state.get("unsupported") and not state.get("schemes"):
+            flags.append("unsupported_scheme")
+            state = {**state, "flags": flags}
+        topic_query = self._topic_query(state["clean"], [topic] if topic else [])
+        hits = self.retriever.search(topic_query, as_of, scheme_id=topic, language=lang, k=3)
+        if not hits and topic_query != state["clean"]:
+            # A lone leftover word can match nothing ("enrol" vs "enrollments"); the scheme name can still match.
+            hits = self.retriever.search(state["clean"], as_of, scheme_id=topic, language=lang, k=3)
+        head = [preface] if preface else []
         if not hits:
             return self._finish(
                 state,
-                "I could not find this in the official documents available to me. Please ask at your nearest "
-                "MitraKendra / Jan Seva Kendra or the Block Welfare Office (free of charge).",
-                "info")
+                "\n\n".join(head + [_NOT_FOUND_TEXT]),
+                intent, scheme_id=topic)
         top = hits[0]
-        generated = self._generate(state, hits, mentioned)
-        if generated is not None:
-            return generated
-        lines = [f"{top.doc.title} - {top.chunk.heading}", _excerpt(_without_heading(top.chunk.text))]
+        if intent == "info":  # eligibility/documents notices about unsupported schemes stay verbatim official text
+            generated = self._generate(state, hits, topic)
+            if generated is not None:
+                return generated
+        lines = head + [f"{top.doc.title} - {top.chunk.heading}", _excerpt(_without_heading(top.chunk.text))]
         citations = [top.doc.source_id]
         if top.doc.doc_type in {"amendment", "circular"} and top.doc.scheme_ids:
             lines.append(f"\n{top.doc.source_id} (effective {top.doc.effective_from}) takes precedence over any "
@@ -329,10 +370,10 @@ class Assistant:
             lines.append("\nAlso relevant: " + ", ".join(_unique(others)))
             citations += others
         lines.append("\n" + FINAL_DECISION[lang])
-        return self._finish(state, "\n".join(lines), "info", citations=citations,
-                            scheme_id=mentioned[0] if mentioned else top.doc.scheme_ids[0] if len(top.doc.scheme_ids) == 1 else None)
+        scheme_id = topic or (top.doc.scheme_ids[0] if len(top.doc.scheme_ids) == 1 else None)
+        return self._finish(state, "\n".join(lines), intent, citations=citations, scheme_id=scheme_id)
 
-    def _generate(self, state: State, hits: list[Hit], mentioned: list[str]) -> State | None:
+    def _generate(self, state: State, hits: list[Hit], topic: str | None) -> State | None:
         """Word the answer with the LLM from the retrieved passages, or None to quote the text instead.
 
         Only reached for plain information questions: fraud, eligibility, documents, fees and appeals
@@ -349,13 +390,19 @@ class Assistant:
         state = {**state, "flags": [*state.get("flags", []),
                                     "llm_not_found" if generation.not_found else "llm_generated"]}
         if generation.not_found:
-            return self._finish(state, _NOT_FOUND_TEXT, "info")
+            return self._finish(state, _NOT_FOUND_TEXT, "info", scheme_id=topic)
         citations = [*generation.cited, *(p.source_id for p in passages)]
-        scheme_id = mentioned[0] if mentioned else top.doc.scheme_ids[0] if len(top.doc.scheme_ids) == 1 else None
+        scheme_id = topic or (top.doc.scheme_ids[0] if len(top.doc.scheme_ids) == 1 else None)
         return self._finish(state, f"{generation.text}\n\n{FINAL_DECISION[lang]}", "info",
                             citations=citations, scheme_id=scheme_id)
 
     # ---- rendering helpers -----------------------------------------------------------------------
+
+    def _unsupported_notice(self, scheme_ids: list[str]) -> str:
+        names = ", ".join(self._names.get(s, s) for s in scheme_ids)
+        return (f"I cannot run an automated eligibility or document check for {names} yet. What follows is the "
+                "official text, so please check the criteria there or ask at your nearest MitraKendra / Jan Seva "
+                "Kendra (free of charge).")
 
     def _topic_query(self, text: str, schemes: list[str]) -> str:
         """The question minus the scheme's own name.

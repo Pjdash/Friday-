@@ -34,10 +34,18 @@ one step, down to keyword retrieval that quotes the official text, which needs n
 
 ```
 pip install -r requirements-rag.txt
-cp .env.example .env            # add GOOGLE_API_KEY (embeddings, Gemini) and/or GROQ_API_KEY
+export GOOGLE_API_KEY=...       # embeddings and Gemini answers
+export GROQ_API_KEY=...         # Groq answers (optional; Gemini alone is enough)
 python scripts/build_index.py   # optional: embed the KB now instead of on the first question
-python scripts/eval_retrieval.py --env-file .env     # compare keyword vs hybrid, calibrate the floor
+python scripts/eval_retrieval.py     # compare keyword vs hybrid, calibrate the floor
 ```
+
+The package reads process environment variables only and never loads `.env` (see the README). The two scripts accept
+`--env-file path/to/.env` if you keep the keys in a file. `mitra/__init__.py` keeps LangSmith tracing off, so
+the provider calls made here are not traced.
+
+The production image installs `requirements-prod.lock`, which does not contain the provider packages, so it runs
+keyword-only (and logs why) until you add `requirements-rag.txt` to the image and regenerate the lock.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -53,6 +61,7 @@ python scripts/eval_retrieval.py --env-file .env     # compare keyword vs hybrid
 ## Not yet verified against the real providers
 
 The model names and the `0.62` similarity floor are defaults, not measurements. They were written without a working API
-key, so the test suite uses fakes. Before relying on this in production, run `scripts/eval_retrieval.py --env-file .env`:
+key, so the test suite uses fakes. Before relying on this in production, run `scripts/eval_retrieval.py` (with the keys
+exported, or `--env-file`):
 it reports keyword vs hybrid results on 23 questions in four languages and suggests a floor for `MITRA_DENSE_MIN_SIM`.
 If a model name has been retired, set `MITRA_GROQ_MODEL` / `MITRA_GEMINI_MODEL`; until then answers fall back to quoting.

@@ -116,8 +116,9 @@ def _read_dir(directory: Path) -> Iterator[Document]:
         doc = _document_from_markdown(path)
         if doc is not None:
             yield doc
-    for path in sorted((directory / "kb" / "grievances").glob("*.json")):
-        yield from _documents_from_grievances(path)
+    for folder in (directory / "kb" / "grievances", directory / "grievances"):
+        for path in sorted(folder.glob("*.json")):
+            yield from _documents_from_grievances(path)
 
 
 def _normalise(text: str) -> str:
@@ -171,6 +172,16 @@ class KnowledgeBase:
 
     def get(self, source_id: str) -> Document | None:
         return self._docs.get(source_id)
+
+    def problems(self, required_ids: Iterable[str] = ()) -> list[str]:
+        """Reasons this knowledge base is not safe to serve from (empty list = healthy).
+
+        Reports only source ids, never file paths, so the result can be shown to callers.
+        """
+        found = [f"conflicting copies of {source_id}" for source_id, _ in self.conflicts]
+        found += [f"missing required document {source_id}" for source_id in sorted(set(required_ids))
+                  if source_id not in self._docs]
+        return found
 
     def authoritative(self) -> list[Document]:
         return [d for d in self._docs.values() if d.is_authoritative]
