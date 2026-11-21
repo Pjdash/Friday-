@@ -14,12 +14,13 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from . import config
+from . import config, embeddings
 from .eligibility import Verdict, evaluate, evaluate_all, normalize_profile
 from .extract import extract_profile
+from .generator import Generator, Passage, default_generator
 from .i18n import FINAL_DECISION, FRAUD_REPORT, LANGUAGES, NEVER_SHARE_OTP, ZERO_FEE, detect_language
 from .kb import KnowledgeBase
-from .retrieval import Retriever, tokenize
+from .retrieval import Hit, Retriever, tokenize
 from .safety import FraudSignal, detect_fraud, sanitize
 from .schemes import EXTRA_ALIASES, SCHEMES, official_names
 from .seed import CitizenStore
@@ -84,11 +85,20 @@ def _unique(items: list[str]) -> list[str]:
     return list(dict.fromkeys(items))
 
 
+_NOT_FOUND_TEXT = ("I could not find this in the official documents available to me. Please ask at your nearest "
+                   "MitraKendra / Jan Seva Kendra or the Block Welfare Office (free of charge).")
+
+
 class Assistant:
-    def __init__(self, kb: KnowledgeBase | None = None, citizens: CitizenStore | None = None):
+    def __init__(self, kb: KnowledgeBase | None = None, citizens: CitizenStore | None = None, *,
+                 retriever: Retriever | None = None, generator: Generator | None = None):
+        """`retriever` and `generator` default to the environment-configured ones (embeddings and LLM
+        answers are used when keys and packages are available, otherwise keyword search and quoting)."""
         self.kb = kb or KnowledgeBase.load()
         self.citizens = citizens if citizens is not None else CitizenStore.load()
-        self.retriever = Retriever(self.kb)
+        self.retriever = retriever or Retriever(
+            self.kb, embedder=embeddings.default_embedder(), cache_path=embeddings.cache_dir())
+        self.generator = generator if generator is not None else default_generator()
         self._aliases = self._build_aliases()
         self._graph = self._build_graph()
 
@@ -299,6 +309,9 @@ class Assistant:
                 "MitraKendra / Jan Seva Kendra or the Block Welfare Office (free of charge).",
                 "info")
         top = hits[0]
+        generated = self._generate(state, hits, mentioned)
+        if generated is not None:
+            return generated
         lines = [f"{top.doc.title} - {top.chunk.heading}", _excerpt(_without_heading(top.chunk.text))]
         citations = [top.doc.source_id]
         if top.doc.doc_type in {"amendment", "circular"} and top.doc.scheme_ids:
@@ -318,6 +331,29 @@ class Assistant:
         lines.append("\n" + FINAL_DECISION[lang])
         return self._finish(state, "\n".join(lines), "info", citations=citations,
                             scheme_id=mentioned[0] if mentioned else top.doc.scheme_ids[0] if len(top.doc.scheme_ids) == 1 else None)
+
+    def _generate(self, state: State, hits: list[Hit], mentioned: list[str]) -> State | None:
+        """Word the answer with the LLM from the retrieved passages, or None to quote the text instead.
+
+        Only reached for plain information questions: fraud, eligibility, documents, fees and appeals
+        are computed deterministically and never see a model. The citations are the retrieved sources,
+        not whatever the model claims, and the localised disclaimer is always appended here.
+        """
+        if self.generator is None:
+            return None
+        as_of, lang, top = state["as_of"], state["lang"], hits[0]
+        passages = _passages_of(hits)
+        generation = self.generator.answer(state["clean"], passages, lang, as_of)
+        if generation is None:
+            return None
+        state = {**state, "flags": [*state.get("flags", []),
+                                    "llm_not_found" if generation.not_found else "llm_generated"]}
+        if generation.not_found:
+            return self._finish(state, _NOT_FOUND_TEXT, "info")
+        citations = [*generation.cited, *(p.source_id for p in passages)]
+        scheme_id = mentioned[0] if mentioned else top.doc.scheme_ids[0] if len(top.doc.scheme_ids) == 1 else None
+        return self._finish(state, f"{generation.text}\n\n{FINAL_DECISION[lang]}", "info",
+                            citations=citations, scheme_id=scheme_id)
 
     # ---- rendering helpers -----------------------------------------------------------------------
 
@@ -396,3 +432,18 @@ def _amended_clause(doc) -> str:
         if "amended clause" in chunk.heading.casefold():
             return chunk.text
     return doc.body
+
+
+def _passages_of(hits: list[Hit]) -> list[Passage]:
+    """The retrieved sections plus the later circulars that amend them, each marked for the model."""
+    passages: dict[tuple[str, str], Passage] = {}
+    for hit in hits:
+        doc = hit.doc
+        overriding = doc.doc_type in {"amendment", "circular"} and bool(doc.scheme_ids)
+        passages.setdefault((doc.source_id, hit.chunk.heading), Passage(
+            doc.source_id, hit.chunk.heading, hit.chunk.text, doc.doc_type, doc.effective_from, overriding))
+        for amendment in hit.amended_by:
+            passages.setdefault((amendment.source_id, "Amended Clause"), Passage(
+                amendment.source_id, "Amended Clause", _amended_clause(amendment), amendment.doc_type,
+                amendment.effective_from, True))
+    return list(passages.values())
