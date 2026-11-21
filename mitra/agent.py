@@ -38,7 +38,9 @@ _KEYWORDS: dict[str, tuple[str, ...]] = {
         "eligib", "qualify", "can i apply", "am i ", "पात्र", "ಅರ್ಹ", "தகுதி", "apply kar sakta", "mil sakta",
     ),
     "documents": ("document", "papers", "certificate", "दस्तावेज", "कागज", "प्रमाण", "ದಾಖಲೆ", "ஆவண"),
-    "fee": (" fee", "charge", "free of cost", "how much", "शुल्क", "ಶುಲ್ಕ", "கட்டணம்"),
+    # Not a bare "how much": "How much monthly pension will I get?" asks for a benefit amount, not a fee.
+    "fee": (" fee", "charge", "free of cost", " cost", "how much to pay", "how much do i pay",
+            "how much should i pay", "to pay", "शुल्क", "ಶುಲ್ಕ", "கட்டணம்"),
 }
 _REJECTION = ("reject", "खारिज", "अस्वीकार", "ತಿರಸ್ಕೃತ", "நிராகரி")
 
@@ -383,7 +385,7 @@ class Assistant:
         if self.generator is None:
             return None
         as_of, lang, top = state["as_of"], state["lang"], hits[0]
-        passages = _passages_of(hits)
+        passages = _passages_of(hits, lang)
         generation = self.generator.answer(state["clean"], passages, lang, as_of)
         if generation is None:
             return None
@@ -481,10 +483,15 @@ def _amended_clause(doc) -> str:
     return doc.body
 
 
-def _passages_of(hits: list[Hit]) -> list[Passage]:
-    """The retrieved sections plus the later circulars that amend them, each marked for the model."""
+def _passages_of(hits: list[Hit], language: str = "en") -> list[Passage]:
+    """The retrieved sections plus the later circulars that amend them, each marked for the model.
+
+    Sections written in a third language are left out: a Tamil question that also retrieved a Kannada
+    section was once answered partly in Kannada. English and mixed-language notices are always kept.
+    """
+    usable = [h for h in hits if h.doc.language in (language, "en", "mixed")] or hits
     passages: dict[tuple[str, str], Passage] = {}
-    for hit in hits:
+    for hit in usable:
         doc = hit.doc
         overriding = doc.doc_type in {"amendment", "circular"} and bool(doc.scheme_ids)
         passages.setdefault((doc.source_id, hit.chunk.heading), Passage(

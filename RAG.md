@@ -21,7 +21,8 @@ one step, down to keyword retrieval that quotes the official text, which needs n
   excluded before ranking, so embeddings cannot surface them. A later circular that amends a clause is sent to the
   model as `LATER AMENDMENT` and listed in the citations.
 * **Numbers and sources are checked.** A reply is discarded if it cites a source that was not retrieved, cites
-  nothing, or contains an amount, limit, day count or year found in neither the passages nor the question.
+  nothing, or contains an amount, limit, day count or year found in neither the passages nor the question. A full
+  date counts as one unit, so `2026-09-11` is rejected even though `2026-09-10` and the numbers 9 and 11 appear.
 * **Citations and the disclaimer are not the model's.** The citation list comes from retrieval; the localised
   "department makes the final decision" line is always appended by the code.
 * **Out-of-scope questions get "not found".** Dense matches need a similarity floor, and the model is told to answer

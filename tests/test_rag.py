@@ -9,12 +9,12 @@ from datetime import date
 import pytest
 
 from mitra import embeddings, generator
-from mitra.agent import Assistant, _NOT_FOUND_TEXT
+from mitra.agent import Assistant, _NOT_FOUND_TEXT, _passages_of
 from mitra.embeddings import VectorIndex
 from mitra.generator import Generator, Passage, check, redact
 from mitra.i18n import FINAL_DECISION
-from mitra.kb import Document, KnowledgeBase
-from mitra.retrieval import Retriever
+from mitra.kb import Chunk, Document, KnowledgeBase
+from mitra.retrieval import Hit, Retriever
 from mitra.seed import CitizenStore
 
 from conftest import TODAY
@@ -244,6 +244,12 @@ def test_list_numbering_citation_ids_and_the_date_are_not_counted_as_claims():
     assert run_check(reply) is None
 
 
+def test_dates_and_headings_shown_in_the_prompt_may_be_quoted_back():
+    """Found live: a correct reply quoting 'effective 2026-09-10' from the passage header was rejected."""
+    assert run_check("Raised on 2026-09-10 to ₹1,50,000 [CIR-2026-01].") is None
+    assert run_check("Raised on 2026-09-11 to ₹1,50,000 [CIR-2026-01].") == "unsupported_number"
+
+
 def test_numbers_the_citizen_wrote_may_be_repeated():
     assert run_check("At age 64 the amount is ₹1,500 [GL-PEN-01].", "I am 64. What is the pension amount?") is None
 
@@ -261,6 +267,7 @@ def test_prompt_marks_amendments_wraps_the_question_and_names_the_language():
     Generator([chat]).answer("pension? my number is 9876543210", PASSAGES, "kn", TODAY)
     system, user = chat.calls[0]
     assert "Kannada" in system and "NOT_FOUND" in system
+    assert "never mix languages" in system and "appended automatically" in system  # no doubled disclaimer
     assert "[CIR-2026-01] LATER AMENDMENT, effective 2026-09-10" in user
     assert "<question>\npension? my number is [removed]\n</question>" in user
     assert "Today's date: 2026-11-21" in user
@@ -347,6 +354,28 @@ def test_information_answers_are_worded_by_the_model_from_the_retrieved_passages
     prompt = chat.calls[0][1]
     assert "[CIR-2026-01] LATER AMENDMENT" in prompt   # the model is told which clause overrides which
     assert not [c for c in answer.citations if c.startswith("GRV-")]
+
+
+def test_benefit_amount_questions_reach_retrieval_but_cost_questions_stay_fee_answers(assistant):
+    """'How much ...' used to mean fee, so 'How much monthly pension will I get?' never reached the knowledge base."""
+    for question in ("How much monthly pension will I get?", "How much is the drip irrigation subsidy?"):
+        assert assistant.ask(question, as_of=TODAY).intent == "info", question
+    for question in ("How much does it cost to apply?", "How much should I pay to apply for the pension?",
+                     "Is there any fee to apply?"):
+        assert assistant.ask(question, as_of=TODAY).intent == "fee", question
+
+
+def test_sections_in_a_third_language_are_not_shown_to_the_model():
+    """Found live: a Tamil question that also retrieved a Kannada section was answered partly in Kannada."""
+    def hit(source_id, language):
+        d = doc(source_id, "guideline", source_id, language, "SCH-FRM-01", f"## 2 Benefit\n{source_id} text")
+        return Hit(Chunk(d, "2 Benefit", f"## 2 Benefit\n{source_id} text"), 1.0, [])
+
+    hits = [hit("TA-FRM-01", "ta"), hit("KN-FRM-01", "kn"), hit("GL-FRM-01", "en"), hit("MIX-NOT-01", "mixed")]
+    assert [p.source_id for p in _passages_of(hits, "ta")] == ["TA-FRM-01", "GL-FRM-01", "MIX-NOT-01"]
+    assert [p.source_id for p in _passages_of(hits, "en")] == ["GL-FRM-01", "MIX-NOT-01"]
+    only_other = [hit("KN-FRM-01", "kn")]
+    assert [p.source_id for p in _passages_of(only_other, "ta")] == ["KN-FRM-01"]  # better than no answer at all
 
 
 def test_the_model_cannot_add_a_citation_the_retriever_did_not_find(kb, citizens):
