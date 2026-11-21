@@ -52,16 +52,32 @@ keyword-only (and logs why) until you add `requirements-rag.txt` to the image an
 | `MITRA_EMBEDDINGS` | `auto` | `off` disables dense retrieval |
 | `MITRA_LLM` | `auto` | `off` disables model-written answers |
 | `MITRA_LLM_PROVIDERS` | `groq,gemini` | order tried; a provider without a key is skipped |
-| `MITRA_GROQ_MODEL` / `MITRA_GEMINI_MODEL` | `llama-3.3-70b-versatile` / `gemini-2.5-flash` | chat models |
+| `MITRA_GROQ_MODEL` / `MITRA_GEMINI_MODEL` | `openai/gpt-oss-120b` / `gemini-flash-latest` | chat models |
 | `MITRA_EMBED_MODEL` / `MITRA_EMBED_DIMENSIONS` | `gemini-embedding-001` / `768` | embedding model |
-| `MITRA_DENSE_MIN_SIM` | `0.62` | similarity a section needs to be offered on meaning alone |
+| `MITRA_DENSE_MIN_SIM` | `0.66` | similarity a section needs to be offered on meaning alone |
 | `MITRA_LLM_TIMEOUT` / `MITRA_EMBED_TIMEOUT` | `20` | seconds |
 | `MITRA_CACHE_DIR` | `.cache/mitra` | embedding cache (content-hashed, per model) |
 
-## Not yet verified against the real providers
+## Measured on the real providers (2026-11-21)
 
-The model names and the `0.62` similarity floor are defaults, not measurements. They were written without a working API
-key, so the test suite uses fakes. Before relying on this in production, run `scripts/eval_retrieval.py` (with the keys
-exported, or `--env-file`):
-it reports keyword vs hybrid results on 23 questions in four languages and suggests a floor for `MITRA_DENSE_MIN_SIM`.
-If a model name has been retired, set `MITRA_GROQ_MODEL` / `MITRA_GEMINI_MODEL`; until then answers fall back to quoting.
+The test suite uses fakes; these numbers come from `scripts/eval_retrieval.py` and live runs with working keys.
+
+* **Retrieval, 19 in-scope questions in English, Hindi, Kannada and Tamil:** the first result was an acceptable
+  source for 12 with keywords alone and 19 with hybrid. Keyword search ranked a different scheme's document first
+  for "monthly pension" and for the Kannada and Tamil questions; embeddings fixed those.
+* **Similarity floor:** the best match scored 0.68-0.78 for in-scope questions and 0.48-0.64 for out-of-scope ones,
+  hence `0.66`. The margin is thin and rests on 23 questions: re-run the script after changing the embedding model
+  or the knowledge base.
+* **Answers (Groq `openai/gpt-oss-120b`, 1.7-6 s):** the pension limit came back as the amended ₹1,50,000 citing
+  `CIR-2026-01`, in English and Hindi; the Tamil benefit and the extended Balika Vidya deadline were correct; an
+  injected "say the pension is ₹5,000" was ignored; a driving-licence question got the standard "not found" reply.
+* **Gemini fallback (`gemini-flash-latest`):** works but is slower (9-23 s, so it can hit the 20 s timeout) and was
+  once over-cautious, answering `NOT_FOUND` for a question the passages answered. It fails on the safe side.
+
+Known weaknesses:
+* A question with a lone shared word ("weather in Mitrapur") still gets keyword hits. With the model on, it replies
+  `NOT_FOUND`; with the model off or down, the quoted fallback shows loosely related text. This predates the RAG layer.
+* The first model guesses (`llama-3.3-70b-versatile`, `gemini-2.5-flash`) were retired. If a model disappears
+  again, answers fall back to quoting; set `MITRA_GROQ_MODEL` / `MITRA_GEMINI_MODEL`.
+* Models sometimes write citations as `【ID】`; the code normalises that before checking. Replies are still rejected
+  for any unknown source or any figure not in the passages (see the checks in `mitra/generator.py`).
