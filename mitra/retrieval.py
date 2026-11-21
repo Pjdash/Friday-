@@ -101,9 +101,12 @@ class Retriever:
     RRF_K = 20
     #: How many dense candidates enter the fusion.
     DENSE_POOL = 10
-    #: Cosine similarity a chunk needs to be offered on meaning alone. Uncalibrated until it has been
-    #: tuned against the real provider with scripts/eval_retrieval.py; set MITRA_DENSE_MIN_SIM to override.
-    DENSE_MIN_SIM = 0.62
+    #: Cosine similarity a chunk needs to be offered on meaning alone. Calibrated with
+    #: scripts/eval_retrieval.py against gemini-embedding-001 (768 dimensions): the best match for every in-scope
+    #: question scored 0.68-0.78 and for out-of-scope questions 0.48-0.64. The gap is thin and rests on 23
+    #: questions, so re-run the script after changing the embedding model or the knowledge base.
+    #: Set MITRA_DENSE_MIN_SIM to override.
+    DENSE_MIN_SIM = 0.66
 
     def __init__(self, kb: KnowledgeBase, embedder: Embedder | None = None, *,
                  cache_path: Path | None = None, dense_min_sim: float | None = None,

@@ -26,8 +26,12 @@ from . import env
 log = logging.getLogger("mitra.generator")
 
 NOT_FOUND = "NOT_FOUND"
-DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+# Chosen from the models the configured keys could actually list and call (Nov 2026): the previous guesses,
+# llama-3.3-70b-versatile and gemini-2.5-flash, were no longer available. "-latest" is an alias that Google
+# repoints, so it does not retire; the reply checks below are what keep a changed model honest.
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
+_MAX_OUTPUT_TOKENS = 1024  # reasoning models spend part of this thinking before they answer
 _PASSAGE_CHARS = 1500
 _LANGUAGE_NAMES = {"en": "English", "hi": "Hindi (Devanagari script)", "kn": "Kannada", "ta": "Tamil"}
 
@@ -129,6 +133,18 @@ def _numbers(text: str) -> set[str]:
     return {_canonical(n) for n in _NUMBER.findall(ascii_digits(text)) if _canonical(n)}
 
 
+_TIDY = str.maketrans({
+    " ": " ", " ": " ",      # no-break spaces some models put before a citation
+    "【": "[", "】": "]", "［": "[", "］": "]",  # gpt-oss writes citations as 【ID】; the rule asks for [ID]
+    "‑": "-", "‐": "-",      # non-breaking and typographic hyphens inside dates
+})
+
+
+def _tidy(reply: str) -> str:
+    """Normalise typography a model may use so the citation and number checks see what a reader sees."""
+    return reply.translate(_TIDY)
+
+
 def check(text: str, passages: Sequence[Passage], question: str, as_of: date) -> tuple[str | None, tuple[str, ...]]:
     """(reason it must be rejected or None, source ids cited)."""
     allowed = {p.source_id for p in passages}
@@ -171,6 +187,7 @@ class Generator:
                 self._down_until[client.name] = self._clock() + self._retry_after
                 log.warning("llm call failed", extra={"provider": client.name, "error_type": type(exc).__name__})
                 continue
+            reply = _tidy(reply)
             if reply == NOT_FOUND or reply.rstrip(".") == NOT_FOUND:
                 return Generation("", client.name, (), not_found=True)
             reason, cited = check(reply, passages, question, as_of)
@@ -195,15 +212,15 @@ def default_generator() -> Generator | None:
 
                 model = env.get("MITRA_GROQ_MODEL", DEFAULT_GROQ_MODEL)
                 clients.append(LangChainChat(f"groq:{model}", ChatGroq(
-                    model=model, temperature=0, timeout=timeout, max_retries=1, max_tokens=500,
+                    model=model, temperature=0, timeout=timeout, max_retries=1, max_tokens=_MAX_OUTPUT_TOKENS,
                     api_key=env.groq_key())))
             elif provider == "gemini" and env.google_key():
                 from langchain_google_genai import ChatGoogleGenerativeAI
 
                 model = env.get("MITRA_GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
                 clients.append(LangChainChat(f"gemini:{model}", ChatGoogleGenerativeAI(
-                    model=model, temperature=0, timeout=timeout, max_retries=1, max_output_tokens=500,
-                    google_api_key=env.google_key())))
+                    model=model, temperature=0, timeout=timeout, max_retries=1,
+                    max_output_tokens=_MAX_OUTPUT_TOKENS, google_api_key=env.google_key())))
         except ImportError:
             log.warning("llm provider skipped: its package is not installed (see requirements-rag.txt)",
                         extra={"provider": provider})

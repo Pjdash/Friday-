@@ -36,7 +36,8 @@ QUERIES: list[tuple[str, str, set[str] | None]] = [
     ("How do I appeal if my application is rejected?", "en", {"POL-GRV-01"}),
     ("What must be printed on a school bonafide certificate?", "en", {"CIR-2026-12"}),
     ("What is the closing date for the rural housing grant?", "en", {"CIR-2026-06", "GL-HOU-01"}),
-    ("How is the housing grant paid in instalments?", "en", {"GL-HOU-01"}),
+    # GL-HOU-01 itself expired on 2026-11-20 (valid_until), so only the closing circular is in force today.
+    ("How is the housing grant paid in instalments?", "en", {"GL-HOU-01", "CIR-2026-06"}),
     ("Can my personal data be used without my consent?", "en", {"POL-PRV-01"}),
     ("monthly money from the government for elderly people", "en", PEN),
     ("someone called asking for my one time code to approve my scheme", "en", FRAUD),

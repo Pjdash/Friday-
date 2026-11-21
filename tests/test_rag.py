@@ -266,6 +266,22 @@ def test_prompt_marks_amendments_wraps_the_question_and_names_the_language():
     assert "Today's date: 2026-11-21" in user
 
 
+def test_no_break_spaces_models_put_before_citations_are_normalised():
+    reply = "The pension is ₹1,500 per month. [GL-PEN-01] Thank you."
+    result = Generator([FakeChat(reply)]).answer(QUESTION, PASSAGES, "en", TODAY)
+    assert result.text == "The pension is ₹1,500 per month. [GL-PEN-01] Thank you."
+
+
+def test_fullwidth_bracket_citations_are_accepted_but_still_checked():
+    """Observed live: openai/gpt-oss-120b writes 【GL-PEN-01】, which is a correct citation in other brackets."""
+    ok = Generator([FakeChat("The pension is ₹1,500 per month【GL-PEN-01】【CIR-2026-01】")]).answer(
+        QUESTION, PASSAGES, "en", TODAY)
+    assert ok.cited == ("GL-PEN-01", "CIR-2026-01") and "[GL-PEN-01]" in ok.text
+    # the same leniency must not let an invented source or a wrong figure through
+    assert Generator([FakeChat("It is ₹1,500【GL-XXX-99】")]).answer(QUESTION, PASSAGES, "en", TODAY) is None
+    assert Generator([FakeChat("It is ₹2,500【GL-PEN-01】")]).answer(QUESTION, PASSAGES, "en", TODAY) is None
+
+
 def test_not_found_is_passed_through():
     result = Generator([FakeChat("NOT_FOUND")]).answer(QUESTION, PASSAGES, "en", TODAY)
     assert result.not_found and result.text == ""
