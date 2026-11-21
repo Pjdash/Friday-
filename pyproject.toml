@@ -1,0 +1,23 @@
+# Packaging for the Vercel Python service. Vercel installs from pyproject.toml/uv.lock, so this lists
+# only the runtime dependencies (same set as requirements-prod.txt). The root requirements.txt is the
+# heavy developer set (chromadb, faiss, pandas...) and must not be what gets installed in production.
+[project]
+name = "mitra"
+version = "1.0.0"
+description = "MitraSeva scheme assistant"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.165.0",
+    "uvicorn==0.54.0",
+    "pydantic==2.14.4",
+    "langgraph==1.2.24",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+    "httpx==0.28.1",
+]
+
+[tool.vercel]
+entrypoint = "mitra.api:app"
