@@ -5,15 +5,22 @@ old pension cap) and carry no authority. FAQs are retrievable but ranked below o
 """
 from __future__ import annotations
 
+import logging
 import math
 import re
+import threading
+import time
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 
-from . import precedence
+from . import env, precedence
+from .embeddings import Embedder, VectorIndex
 from .kb import Chunk, Document, KnowledgeBase, chunks_of
+
+log = logging.getLogger("mitra.retrieval")
 
 RETRIEVABLE_TYPES = frozenset({"guideline", "policy", "amendment", "circular", "faq"})
 
@@ -72,33 +79,114 @@ class _BM25:
         return total
 
 
+def embedding_text(chunk: Chunk) -> str:
+    """What the dense index sees for a chunk: the document title plus the section.
+
+    Unlike BM25, dense retrieval needs the title. A section such as "2 Benefit" never names its own
+    scheme, so without the title every scheme's benefit section would look alike.
+    """
+    return f"{chunk.doc.title}\n{chunk.text}"
+
+
 class Retriever:
-    def __init__(self, kb: KnowledgeBase):
+    """Hybrid search: BM25 keywords fused with dense embeddings when an embedder is available.
+
+    Every guard is applied before and independently of ranking, so the dense side can never surface
+    something BM25 could not: documents not in force on the date, other schemes' documents, and
+    resolved grievances (never indexed) are all excluded first. Without an embedder, or whenever the
+    provider fails, results are exactly the keyword results.
+    """
+
+    #: Reciprocal-rank-fusion constant: larger values flatten the difference between ranks.
+    RRF_K = 20
+    #: How many dense candidates enter the fusion.
+    DENSE_POOL = 10
+    #: Cosine similarity a chunk needs to be offered on meaning alone. Uncalibrated until it has been
+    #: tuned against the real provider with scripts/eval_retrieval.py; set MITRA_DENSE_MIN_SIM to override.
+    DENSE_MIN_SIM = 0.62
+
+    def __init__(self, kb: KnowledgeBase, embedder: Embedder | None = None, *,
+                 cache_path: Path | None = None, dense_min_sim: float | None = None,
+                 retry_after: float = 60.0, clock=time.monotonic):
         self.kb = kb
         self.chunks: list[Chunk] = [
             c for doc in kb if doc.doc_type in RETRIEVABLE_TYPES for c in chunks_of(doc)
         ]
-        # The document title is deliberately not indexed: it repeats in every chunk of a document and
-        # would pull in near-empty preamble chunks whose only content is the title.
+        # The document title is deliberately not indexed for BM25: it repeats in every chunk of a document
+        # and would pull in near-empty preamble chunks whose only content is the title.
         self._index = _BM25([tokenize(c.text) for c in self.chunks])
+        self._embedder = embedder
+        self._cache_path = cache_path
+        self._min_sim = dense_min_sim if dense_min_sim is not None else float(
+            env.get("MITRA_DENSE_MIN_SIM", str(self.DENSE_MIN_SIM)))
+        self._retry_after, self._clock = retry_after, clock
+        self._dense: VectorIndex | None = None
+        self._dense_down_until = 0.0
+        self._lock = threading.Lock()
+
+    @property
+    def dense_enabled(self) -> bool:
+        return self._embedder is not None
+
+    def warm(self) -> bool:
+        """Build (or load from cache) the dense index now. Returns False when it is unavailable."""
+        return self._dense_index() is not None
+
+    def _dense_index(self) -> VectorIndex | None:
+        if self._embedder is None:
+            return None
+        with self._lock:
+            if self._dense is not None:
+                return self._dense
+            if self._clock() < self._dense_down_until:
+                return None
+            try:
+                self._dense = VectorIndex([embedding_text(c) for c in self.chunks], self._embedder, self._cache_path)
+                log.info("dense index ready", extra={"chunks": len(self._dense), "embedded_now": self._dense.newly_embedded})
+            except Exception as exc:  # noqa: BLE001 - any provider failure must degrade to keyword search
+                self._dense_down_until = self._clock() + self._retry_after
+                log.warning("dense index unavailable, using keyword search only",
+                            extra={"error_type": type(exc).__name__})
+            return self._dense
+
+    def _similarities(self, query: str) -> list[float] | None:
+        index = self._dense_index()
+        if index is None:
+            return None
+        try:
+            return index.similarities(query)
+        except Exception as exc:  # noqa: BLE001
+            self._dense_down_until = self._clock() + self._retry_after
+            log.warning("query embedding failed, using keyword search only",
+                        extra={"error_type": type(exc).__name__})
+            return None
+
+    def _eligible(self, i: int, as_of: date, scheme_id: str | None) -> bool:
+        doc = self.chunks[i].doc
+        if not precedence.in_force(doc, as_of, self.kb):
+            return False
+        if scheme_id and doc.scheme_ids and scheme_id not in doc.scheme_ids:
+            return False
+        if scheme_id and not doc.scheme_ids and doc.doc_type != "policy":
+            return False
+        return True
 
     def search(self, query: str, as_of: date, *, scheme_id: str | None = None,
                language: str | None = None, k: int = 3) -> list[Hit]:
-        q = tokenize(query)
-        if not q:
+        if not query.strip():
             return []
+        q = tokenize(query)
+        eligible = [i for i in range(len(self.chunks)) if self._eligible(i, as_of, scheme_id)]
+        lexical = {i: s for i in eligible if q and (s := self._index.score(q, i)) > 0}
+        sims = self._similarities(query)
+
+        if sims is None:
+            scores = dict(lexical)
+        else:
+            scores = self._fuse(lexical, {i: sims[i] for i in eligible})
         scored = []
-        for i, chunk in enumerate(self.chunks):
-            doc = chunk.doc
-            if not precedence.in_force(doc, as_of, self.kb):
-                continue
-            if scheme_id and doc.scheme_ids and scheme_id not in doc.scheme_ids:
-                continue
-            if scheme_id and not doc.scheme_ids and doc.doc_type != "policy":
-                continue
-            score = self._index.score(q, i)
-            if score <= 0:
-                continue
+        for i, score in scores.items():
+            doc = self.chunks[i].doc
             if language and doc.language == language:
                 score *= 1.3
             if not doc.is_authoritative:
@@ -110,3 +198,14 @@ class Retriever:
             chunk = self.chunks[i]
             hits.append(Hit(chunk, score, precedence.amendments_after(chunk.doc, self.kb, as_of)))
         return hits
+
+    def _fuse(self, lexical: dict[int, float], similarity: dict[int, float]) -> dict[int, float]:
+        """Reciprocal rank fusion of the keyword ranking and the (floored) dense ranking."""
+        by_keyword = sorted(lexical, key=lexical.__getitem__, reverse=True)
+        by_meaning = [i for i in sorted(similarity, key=similarity.__getitem__, reverse=True)
+                      if similarity[i] >= self._min_sim][:self.DENSE_POOL]
+        fused: dict[int, float] = {}
+        for ranking in (by_keyword, by_meaning):
+            for rank, i in enumerate(ranking):
+                fused[i] = fused.get(i, 0.0) + 1.0 / (self.RRF_K + rank + 1)
+        return fused

@@ -1,10 +1,16 @@
+import os
 from datetime import date
 
-import pytest
+# Hermetic: tests never call an embedding or LLM provider, whatever keys the developer has in .env.
+# Set before any mitra module reads configuration. RAG tests inject fakes explicitly.
+os.environ["MITRA_EMBEDDINGS"] = "off"
+os.environ["MITRA_LLM"] = "off"
 
-from mitra.agent import Assistant
-from mitra.kb import KnowledgeBase
-from mitra.seed import CitizenStore
+import pytest  # noqa: E402
+
+from mitra.agent import Assistant  # noqa: E402
+from mitra.kb import KnowledgeBase  # noqa: E402
+from mitra.seed import CitizenStore  # noqa: E402
 
 TODAY = date(2026, 11, 21)  # the "current" date in the knowledge base's world
 
