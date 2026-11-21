@@ -1,0 +1,7 @@
+# Optional: embeddings (Gemini) and LLM-worded answers (Groq, Gemini). Without these the assistant runs
+# fully offline with keyword retrieval and quotes the official text. Versions are the ones the tests ran against.
+# requirements-prod.lock does not include these; regenerate it after installing this file.
+-r requirements-prod.txt
+langchain-google-genai==4.2.0
+langchain-groq==1.1.2
+python-dotenv==1.2.1
